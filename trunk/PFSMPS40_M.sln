@@ -1,0 +1,20 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 10.00
+# Visual Studio 2008
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "PFSMPS40_M", "PFSMPS40_M.vcproj", "{4DA39D14-0613-4621-AAAC-CD162932A0F5}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Win32 = Debug|Win32
+		Release|Win32 = Release|Win32
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{4DA39D14-0613-4621-AAAC-CD162932A0F5}.Debug|Win32.ActiveCfg = Debug|Win32
+		{4DA39D14-0613-4621-AAAC-CD162932A0F5}.Debug|Win32.Build.0 = Debug|Win32
+		{4DA39D14-0613-4621-AAAC-CD162932A0F5}.Release|Win32.ActiveCfg = Release|Win32
+		{4DA39D14-0613-4621-AAAC-CD162932A0F5}.Release|Win32.Build.0 = Release|Win32
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal

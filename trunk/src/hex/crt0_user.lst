@@ -1,0 +1,244 @@
+   1              	;; 
+   2              	;; C Run-time startup module for dsPIC30 C compiler.
+   3              	;; (c) Copyright 2009 Microchip Technology, All rights reserved
+   4              	;;
+   5              	;; Primary version, with data initialization support.
+   6              	;; The linker loads this version when the --data-init
+   7              	;; option is selected.
+   8              	;;
+   9              	;; Standard 16-bit support, for use with devices that do not support
+  10              	;; Extended Data Space
+  11              	;; 
+  12              	;; See file crt1.s for the alternate version without
+  13              	;; data initialization support.
+  14              	;; 
+  15              	;; Entry __reset takes control at device reset and
+  16              	;; performs the following:
+  17              	;;
+  18              	;;  1. initialize stack and stack limit register
+  19              	;;  2. initialize PSV window if __const_length > 0
+  20              	;;  3. process the data initialization template
+  21              	;;  4. call the .user_init section, if it exists
+  22              	;;  5. call the user's _main entry point
+  23              	;;
+  24              	;; Assigned to section .init, which may be allocated
+  25              	;; at a specific address in linker scripts. 
+  26              	;;
+  27              	;; If a local copy of this file is customized, be sure
+  28              	;; to choose a file name other than crt0.s or crt1.s.
+  29              	;;
+  30              		.ifndef ffunction
+  31              	        .section .init,code
+  32              		.else
+  34              		.endif
+  35              	
+  36              	        .global __resetPRI
+  37              	        .ifdef __C30ELF
+  39              	        .endif
+  40              	__resetPRI:     
+  41              	        .weak  __reset
+  42              	        .ifdef __C30ELF
+  44              	        .endif
+  45              	__reset:
+  46              	;;
+  47              	;; Initialize stack, PSV, and data
+  48              	;; 
+  49              	;; registers used:  w0
+  50              	;;
+  51              	;; Inputs (defined by user or linker):
+  52              	;;  __SP_init
+  53              	;;  __SPLIM_init
+  54              	;; 
+  55              	;; Outputs:
+  56              	;;  (does not return - resets the processor)
+  57              	;; 
+  58              	;; Calls:
+  59              	;;  __psv_init
+  60              	;;  __data_init
+  61              	;;  _main
+  62              	;; 
+  63              	
+  64              	        .weak    __user_init, __has_user_init
+  65              	        .weak   __system_lowlevel_init
+  66              	        
+  67 000000  0F 00 20 	        mov      #__SP_init,w15    ; initialize w15
+  68 000002  0E 00 20 	        mov      #__SPLIM_init,w14
+  69              	        
+  70              	        ; V.Gyurov 01.12.2011
+  71              	        ; call _system_lowlevel_init() which init cpu clock, before data is initialized
+  72 000004  00 00 02 	        call    __system_lowlevel_init
+  72         00 00 00 
+  73              	
+  74              	;; Uncomment to pre-initialize all RAM
+  75              	;;
+  76              	;; Start at the beginning of RAM, writing the value __DATA_INIT_VAL to memory
+  77              	;;   write __STACK_INIT_VAL if the memory is part of stack space
+  78              	;; cycle through to the end of RAM
+  79              	;;
+  80              	;; define initialization values as equate:
+  81              	 .global __DATA_INIT_VAL, __STACK_INIT_VAL
+  82              	 .equ __DATA_INIT_VAL, 0xDEAD
+  83              	 .equ __STACK_INIT_VAL, 0xA1DE
+  84              	
+  85              	
+  86 000008  00 00 20 	        mov      #__DATA_BASE,w0
+  87 00000a  01 00 20 	        mov      #__DATA_LENGTH,w1
+  88 00000c  D3 EA 2D 	        mov      #__DATA_INIT_VAL,w3 ; start of initializing RAM
+  89 00000e  81 00 40 	        add      w0,w1,w1
+  90              	
+  91 000010  0F 00 E1 	1:      cp       w0,w15
+  92 000012  00 00 31 	        bra      geu, 2f             ; move to initializing STACK
+  93 000014  03 18 78 	        mov      w3,[w0++]
+  94 000016  01 00 E1 	        cp       w0, w1
+  95 000018  00 00 39 	        bra      ltu, 1b
+  96 00001a  00 00 37 	        bra      1f
+  97              	
+  98 00001c  E3 1D 2A 	2:      mov      #__STACK_INIT_VAL,w3
+  99 00001e  80 87 EB 	        setm     w15
+ 100 000020  03 18 78 	3:      mov      w3,[w0++]
+ 101 000022  0E 00 E1 	        cp       w0,w14
+ 102 000024  00 00 3A 	        bra      nz,3b
+ 103 000026  D3 EA 2D 	        mov      #__DATA_INIT_VAL,w3
+ 104 000028  01 00 E1 	        cp       w0,w1
+ 105 00002a  00 00 39 	        bra      ltu,1b
+ 106 00002c  0F 00 20 	1:      mov      #__SP_init,w15    ; (RE) initialize w15
+ 107              	
+ 108              	
+ 109              	;  end RAM PRE-init
+ 110              	
+ 111 00002e  0E 00 88 	        mov      w14,_SPLIM        ; initialize SPLIM
+ 112 000030  00 00 00 	        nop                        ; wait 1 cycle
+ 113              	
+ 114 000032  00 00 07 	        rcall    __psv_init        ; initialize PSV
+ 115              	        
+ 116 000034  00 00 20 	        mov      #__dinit_tbloffset,w0 ; w0,w1 = template
+ 117 000036  01 00 20 	        mov      #__dinit_tblpage,w1   ;
+ 118 000038  00 00 07 	        rcall    __data_init_standard  ; initialize data
+ 119              	        
+ 120              	        
+ 121              	
+ 122 00003a  00 00 20 	        mov      #__has_user_init,w0
+ 123 00003c  00 00 E0 	        cp0      w0                ; user init functions?
+ 124 00003e  00 00 32 	        bra      eq,1f             ; br if not
+ 125 000040  00 00 02 	        call     __user_init       ; else call them
+ 125         00 00 00 
+ 126              	1:
+ 127 000044  00 00 02 	        call  _main                ; call user's main()
+ 127         00 00 00 
+ 128              	
+ 129 000048  00 40 DA 	        .pword 0xDA4000            ; halt the simulator
+ 130 00004a  00 00 FE 	        reset                      ; reset the processor
+ 131              	
+ 132              		.ifdef ffunction
+ 134              		.endif
+ 135              	        .global __psv_init
+ 136              	__psv_init:
+ 137              	;; 
+ 138              	;; Initialize PSV window if _constlen > 0
+ 139              	;; 
+ 140              	;; Registers used:  w0
+ 141              	;; 
+ 142              	;; Inputs (defined by linker):
+ 143              	;;  __const_length
+ 144              	;;  __const_psvpage
+ 145              	;; 
+ 146              	;; Outputs:
+ 147              	;;  (none)
+ 148              	;; 
+ 149              		.equiv   PSV, 0x0002
+ 150              	
+ 151 00004c  00 40 A9 	        bclr     _CORCON,#PSV        ; disable PSV (default)
+ 152 00004e  00 00 20 	        mov      #__const_length,w0  ; 
+ 153 000050  00 00 E0 	        cp0      w0                  ; test length of constants
+ 154 000052  00 00 32 	        bra      z,1f                ; br if zero
+ 155              	
+ 156 000054  00 00 20 	        mov      #__const_psvpage,w0 ; 
+ 157 000056  00 00 88 	        mov      w0,_PSVPAG          ; PSVPAG = psvpage(constants)
+ 158 000058  00 40 A8 	        bset     _CORCON,#PSV        ; enable PSV
+ 159              	
+ 160 00005a  00 00 06 	1:      return                       ;  and exit
+ 161              	
+ 162              	
+ 163              	.include "null_signature.s"
+   1              	;
+   2              	;       This file provides a null signature that is suitable for assembly
+   3              	;       code that does not use any special features
+   4              	;
+   5              	        .section __c30_signature, info, data
+   6 0000 00 00       	        .word 0x0000
+   7 0002 00 00       	        .word 0x0000
+   8 0004 00 00       	        .word 0x0000
+   9                 	
+  10                 	
+ 164                 	
+DEFINED SYMBOLS
+                            *ABS*:00000000 D:/Projects/PFSMPS/01_Firmware/trunk/src/null_signature.s
+                            *ABS*:00000000 D:/Projects/PFSMPS/01_Firmware/trunk/src/crt0_user.s
+                            *ABS*:00000001 __DEBUG
+                            *ABS*:00000001 __33FJ64GS606
+                            *ABS*:00000001 __dsPIC33F
+                            *ABS*:00000001 __HAS_DSP
+                            *ABS*:00000001 __HAS_DMA
+                            *ABS*:00000001 __HAS_CODEGUARD
+                            *ABS*:00000001 __C30COFF
+     src\crt0_user.s:40     .init:00000000 __resetPRI
+     src\crt0_user.s:45     .init:00000000 __reset
+                            *ABS*:0000dead __DATA_INIT_VAL
+                            *ABS*:0000a1de __STACK_INIT_VAL
+     src\crt0_user.s:91     .init:00000010 L11
+     src\crt0_user.s:98     .init:0000001c L21
+     src\crt0_user.s:106    .init:0000002c L12
+     src\crt0_user.s:100    .init:00000020 L31
+     src\crt0_user.s:136    .init:0000004c __psv_init
+     src\crt0_user.s:126    .init:00000044 L13
+     src\crt0_user.s:149    *ABS*:00000002 PSV
+     src\crt0_user.s:160    .init:0000005a L14
+
+UNDEFINED SYMBOLS
+__user_init
+__has_user_init
+__system_lowlevel_init
+__SP_init
+__SPLIM_init
+__DATA_BASE
+__DATA_LENGTH
+_SPLIM
+__dinit_tbloffset
+__dinit_tblpage
+__data_init_standard
+_main
+_CORCON
+__const_length
+__const_psvpage
+_PSVPAG
+
+EQUATE SYMBOLS
+D:/Projects/PFSMPS/01_Firmware/trunk/src/null_signature.s = 0x0
+D:/Projects/PFSMPS/01_Firmware/trunk/src/crt0_user.s = 0x0
+                         __DEBUG = 0x1
+                   __33FJ64GS606 = 0x1
+                      __dsPIC33F = 0x1
+                       __HAS_DSP = 0x1
+                       __HAS_DMA = 0x1
+                 __HAS_CODEGUARD = 0x1
+                       __C30COFF = 0x1
+                 __DATA_INIT_VAL = 0xdead
+                __STACK_INIT_VAL = 0xa1de
+                             PSV = 0x2
+
+SECTION INFORMATION:
+
+Section        Length (PC units)   Length (bytes) (dec)
+-------        -----------------   --------------------
+.text                          0               0  (0)
+.init                       0x5c            0x8a  (138)
+
+TOTAL PROGRAM MEMORY USED (bytes):          0x8a  (138)
+
+Section           Alignment Gaps   Length (bytes) (dec)
+-------           --------------   --------------------
+.data                          0               0  (0)
+.bss                           0               0  (0)
+__c30_signature                0             0x6  (6)
+
+   TOTAL DATA MEMORY USED (bytes):           0x6  (6)

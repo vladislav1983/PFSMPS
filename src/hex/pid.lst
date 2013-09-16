@@ -1,0 +1,438 @@
+   1              	;*********************************************************************
+   2              	;                                                                    *
+   3              	;                       Software License Agreement                   *
+   4              	;                                                                    *
+   5              	;   The software supplied herewith by Microchip Technology           *
+   6              	;   Incorporated (the "Company") for its dsPIC controller            *
+   7              	;   is intended and supplied to you, the Company's customer,         *
+   8              	;   for use solely and exclusively on Microchip dsPIC                *
+   9              	;   products. The software is owned by the Company and/or its        *
+  10              	;   supplier, and is protected under applicable copyright laws. All  *
+  11              	;   rights are reserved. Any use in violation of the foregoing       *
+  12              	;   restrictions may subject the user to criminal sanctions under    *
+  13              	;   applicable laws, as well as to civil liability for the breach of *
+  14              	;   the terms and conditions of this license.                        *
+  15              	;                                                                    *
+  16              	;   THIS SOFTWARE IS PROVIDED IN AN "AS IS" CONDITION.  NO           *
+  17              	;   WARRANTIES, WHETHER EXPRESS, IMPLIED OR STATUTORY, INCLUDING,    *
+  18              	;   BUT NOT LIMITED TO, IMPLIED WARRANTIES OF MERCHANTABILITY AND    *
+  19              	;   FITNESS FOR A PARTICULAR PURPOSE APPLY TO THIS SOFTWARE. THE     *
+  20              	;   COMPANY SHALL NOT, IN ANY CIRCUMSTANCES, BE LIABLE FOR SPECIAL,  *
+  21              	;   INCIDENTAL OR CONSEQUENTIAL DAMAGES, FOR ANY REASON WHATSOEVER.  *
+  22              	;                                                                    *
+  23              	;   (c) Copyright 2003 Microchip Technology, All rights reserved.    *
+  24              	;*********************************************************************
+  25              	
+  26              	
+  27              	        ; Local inclusions.
+  68              	        .ifdef  TOOLVERS                        ; [
+  72              	        .endif  ; ]
+  73              	
+  74              	        ; Operational modes for Program Space Visibility.
+  75              	        .equ    PSV_ON,1<<2                     ; program space visible in
+  76              	                                                ; data space
+  77              	
+  78              	;............................................................................
+  79              	
+  80              	        ; Prepare CORCON for fractional computation.
+  81              	        .macro  fractsetup      wx              ; [
+  82              	        mov     #FRACT_MODE,\wx
+  83              	        mov     \wx,CORCON
+  84              	        .endm   ; ]
+  85              	
+  86              	        ; Prepare CORCON for Program Space Visibility access.
+  87              	        .macro  psvaccess       wx              ; [
+  88              	        mov     CORCON,\wx
+  89              	        ior     #PSV_ON,\wx
+  90              	        mov     \wx,CORCON
+  91              	        .endm   ; ]
+  92              	
+  93              	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  94              	
+  95              	; FIR filter structure access.
+  96              	        .equ    COEFFS_IN_DATA,0xFF00   ; indicates that coefficients are in
+  97              	                                        ; (X) data memory.
+  98              	
+  99              	        .equ    oNumCoeffs,0            ; FIRFilter->numCoeffs : (int)
+ 100              	        .equ    oCoeffsBase,(oNumCoeffs+kSof)
+ 101              	                                        ; FIRFilter->coeffsBase : (fractional*)
+ 102              	        .equ    oCoeffsEnd,(oCoeffsBase+kSof)
+ 103              	                                        ; FIRFilter->coeffsEnd : (fractional*)
+ 104              	        .equ    oCoeffsPage,(oCoeffsEnd+kSof)
+ 105              	                                        ; FIRFilter->coeffsPage : (int)
+ 106              	        .equ    oDelayBase,(oCoeffsPage+kSof)
+ 107              	                                        ; FIRFilter->delayBase : (fractional*)
+ 108              	        .equ    oDelayEnd,(oDelayBase+kSof)
+ 109              	                                        ; FIRFilter->delayEnd : (fractional*)
+ 110              	        .equ    oDelay,(oDelayEnd+kSof)
+ 111              	                                        ; FIRFilter->delay : (fractional*)
+ 112              	
+ 113              	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+ 114              	
+ 115              	; IIR Lattice filter structure access.
+ 116              	        .equ    oOrder,0                ; filter->order : (int)
+ 117              	        .equ    oKappaVals,(oOrder+kSof); filter->kappaVals : (fractional*)
+ 118              	        .equ    oGammaVals,(oKappaVals+kSof); filter->gammaVals : (fractional*)
+ 119              	        .equ    oLattCoeffsPage,(oGammaVals+kSof); filter->coeffsPage : (int)
+ 120              	        .equ    oLattDelay,(oLattCoeffsPage+kSof); filter->delay : (fractional*)
+ 121              	
+ 122              	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+ 123              	
+ 124              	; OEF
+  30              	        .list
+  31              	
+  32              	        .equ    offsetabcCoefficients, 0
+  33              	        .equ    offsetcontrolHistory, 2
+  34              	        .equ    offsetcontrolOutput, 4
+  35              	        .equ    offsetmeasuredOutput, 6
+  36              	        .equ    offsetcontrolReference, 8
+  37              	
+  38              	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  39              	
+  40              	        .section .libdsp, code
+  41              	
+  42              	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  43              	;
+  44              	; _PID:
+  45              	; Prototype:
+  46              	;              tPID PID ( tPID *fooPIDStruct )
+  47              	;
+  48              	; Operation:
+  49              	;
+  50              	;                                             ----   Proportional
+  51              	;                                            |    |  Output
+  52              	;                             ---------------| Kp |-----------------
+  53              	;                            |               |    |                 |
+  54              	;                            |                ----                  |
+  55              	;Reference                   |                                     ---
+  56              	;Input         ---           |           --------------  Integral | + | Control   -------
+  57              	;     --------| + |  Control |          |      Ki      | Output   |   | Output   |       |
+  58              	;             |   |----------|----------| ------------ |----------|+  |----------| Plant |--
+  59              	;        -----| - |Difference|          |  1 - Z^(-1)  |          |   |          |       |  |
+  60              	;       |      ---  (error)  |           --------------           | + |           -------   |
+  61              	;       |                    |                                     ---                      |
+  62              	;       | Measured           |         -------------------  Deriv   |                       |
+  63              	;       | Outut              |        |                   | Output  |                       |
+  64              	;       |                     --------| Kd * (1 - Z^(-1)) |---------                        |
+  65              	;       |                             |                   |                                 |
+  66              	;       |                              -------------------                                  |
+  67              	;       |                                                                                   |
+  68              	;       |                                                                                   |
+  69              	;        -----------------------------------------------------------------------------------
+  70              	;
+  71              	;   controlOutput[n] = controlOutput[n-1]
+  72              	;                    + controlHistory[n] * abcCoefficients[0]
+  73              	;                    + controlHistory[n-1] * abcCoefficients[1]
+  74              	;                    + controlHistory[n-2] * abcCoefficients[2]
+  75              	;
+  76              	;  where:
+  77              	;   abcCoefficients[0] = Kp + Ki + Kd
+  78              	;   abcCoefficients[1] = -(Kp + 2*Kd)
+  79              	;   abcCoefficients[2] = Kd
+  80              	;   controlHistory[n] = measuredOutput[n] - referenceInput[n]
+  81              	;  where:
+  82              	;   abcCoefficients, controlHistory, controlOutput, measuredOutput and controlReference
+  83              	;   are all members of the data structure tPID.
+  84              	;
+  85              	; Input:
+  86              	;       w0 = Address of tPID data structure
+  87              	
+  88              	; Return:
+  89              	;       w0 = Address of tPID data structure
+  90              	;
+  91              	; System resources usage:
+  92              	;       {w0..w5}        used, not restored
+  93              	;       {w8,w10}        saved, used, restored
+  94              	;        AccA, AccB     used, not restored
+  95              	;        CORCON         saved, used, restored
+  96              	;
+  97              	; DO and REPEAT instruction usage.
+  98              	;       0 level DO instruction
+  99              	;       0 REPEAT intructions
+ 100              	;
+ 101              	; Program words (24-bit instructions):
+ 102              	;       28
+ 103              	;
+ 104              	; Cycles (including C-function call and return overheads):
+ 105              	;       30
+ 106              	;............................................................................
+ 107              	
+ 108              	        .global _PID                    ; provide global scope to routine
+ 109              	_PID:
+ 110              	
+ 111              	        ; Save working registers.
+ 112 000000  88 1F 78 	        push    w8
+ 113 000002  8A 1F 78 	        push    w10
+ 114 000004  44 00 F8 	        push    CORCON                  ; Prepare CORCON for fractional computation.
+ 115              	
+ 116              	        fractsetup      w8
+ 116 000006  08 0F 20 	> mov #FRACT_MODE,w8
+ 116 000008  28 02 88 	> mov w8,CORCON
+ 117              	
+ 118 00000a  00 04 90 	        mov [w0 + #offsetabcCoefficients], w8    ; w8 = Base Address of _abcCoefficients array [(Kp
+ 119 00000c  10 05 90 	        mov [w0 + #offsetcontrolHistory], w10    ; w10 = Address of _ControlHistory array (state/de
+ 120              	
+ 121 00000e  A0 00 90 	        mov [w0 + #offsetcontrolOutput], w1
+ 122 000010  30 01 90 	        mov [w0 + #offsetmeasuredOutput], w2
+ 123 000012  C0 01 90 	        mov [w0 + #offsetcontrolReference], w3
+ 124              	
+ 125              	        ; Calculate most recent error with saturation, no limit checking required
+ 126 000014  03 00 CA 	        lac     w3, a                   ; A = tPID.controlReference
+ 127 000016  02 80 CA 	        lac     w2, b                   ; B = tPID.MeasuredOutput
+ 128 000018  00 30 CB 	        sub     a                       ; A = tPID.controlReference - tPID.measuredOutput
+ 129 00001a  1A 00 CD 	        sac.r   a, [w10]                ; tPID.ControlHistory[n] = Sat(Rnd(A))
+ 130              	
+ 131              	        ; Calculate PID Control Output
+ 132 00001c  46 04 C3 	        clr     a, [w8]+=2, w4, [w10]+=2, w5            ; w4 = (Kp+Ki+Kd), w5 = _ControlHistory[n]
+ 133 00001e  01 00 CA 	        lac     w1, a                                   ; A = ControlOutput[n-1]
+ 134 000020  46 04 C0 	        mac     w4*w5, a, [w8]+=2, w4, [w10]+=2, w5     ; A += (Kp+Ki+Kd) * _ControlHistory[n]
+ 135              	                                                        ; w4 = -(Kp+2Kd), w5 = _ControlHistory[n-1]
+ 136 000022  1E 04 C0 	        mac     w4*w5, a, [w8], w4, [w10]-=2, w5        ; A += -(Kp+2Kd) * _ControlHistory[n-1]
+ 137              	                                                        ; w4 = Kd, w5 = _ControlHistory[n-2]
+ 138 000024  06 05 C0 	        mac     w4*w5, a, [w10]+=2, w5                  ; A += Kd * _ControlHistory[n-2]
+ 139              	                                                        ; w5 = _ControlHistory[n-1]
+ 140              	                                                        ; w10 = &_ControlHistory[n-2]
+ 141 000026  01 00 CD 	        sac.r   a, w1                                   ; ControlOutput[n] = Sat(Rnd(A))
+ 142 000028  21 00 98 	        mov     w1, [w0 + #offsetcontrolOutput]
+ 143              	
+ 144              	        ;Update the error history on the delay line
+ 145 00002a  05 0D 78 	        mov     w5, [w10]               ; _ControlHistory[n-2] = _ControlHistory[n-1]
+ 146 00002c  EA BA 97 	        mov     [w10 + #-4], w5         ; _ControlHistory[n-1] = ControlHistory[n]
+ 147 00002e  05 25 78 	        mov     w5, [--w10]
+ 148              	
+ 149 000030  44 00 F9 	        pop     CORCON                  ; restore CORCON.
+ 150 000032  4F 05 78 	        pop     w10                     ; Restore working registers.
+ 151 000034  4F 04 78 	        pop     w8
+ 152 000036  00 00 06 	        return
+ 153              	
+ 154              	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+ 155              	
+ 156              	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+ 157              	; _PIDInit:
+ 158              	;
+ 159              	; Prototype:
+ 160              	; void PIDInit ( tPID *fooPIDStruct )
+ 161              	;
+ 162              	; Operation: This routine clears the delay line elements in the array
+ 163              	;            _ControlHistory, as well as clears the current PID output
+ 164              	;            element, _ControlOutput
+ 165              	;
+ 166              	; Input:
+ 167              	;       w0 = Address of data structure tPID (type defined in dsp.h)
+ 168              	;
+ 169              	; Return:
+ 170              	;       (void)
+ 171              	;
+ 172              	; System resources usage:
+ 173              	;       w0             used, restored
+ 174              	;
+ 175              	; DO and REPEAT instruction usage.
+ 176              	;       0 level DO instruction
+ 177              	;       0 REPEAT intructions
+ 178              	;
+ 179              	; Program words (24-bit instructions):
+ 180              	;       11
+ 181              	;
+ 182              	; Cycles (including C-function call and return overheads):
+ 183              	;       13
+ 184              	;............................................................................
+ 185              	        .global _PIDInit                ; provide global scope to routine
+ 186              	_PIDInit:
+ 187 000038  80 1F 78 	        push    w0
+ 188 00003a  40 00 B0 	        add  #offsetcontrolOutput, w0   ; Set up pointer for controlOutput
+ 189 00003c  00 08 EB 		    clr  [w0]                       ; Clear controlOutput
+ 190 00003e  4F 00 78 		    pop  w0
+ 191 000040  80 1F 78 		    push w0
+ 192              	                                        ;Set up pointer to the base of
+ 193              	                                        ;controlHistory variables within tPID
+ 194 000042  10 00 90 	        mov     [w0 + #offsetcontrolHistory], w0
+ 195              	                                        ; Clear controlHistory variables
+ 196              	                                        ; within tPID
+ 197 000044  00 18 EB 	        clr     [w0++]                  ; ControlHistory[n]=0
+ 198 000046  00 18 EB 	        clr     [w0++]                  ; ControlHistory[n-1] = 0
+ 199 000048  00 08 EB 	        clr     [w0]                    ; ControlHistory[n-2] = 0
+ 200 00004a  4F 00 78 	        pop     w0                      ;Restore pointer to base of tPID
+ 201 00004c  00 00 06 	        return
+ 202              	
+ 203              	
+ 204              	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+ 205              	; _PIDCoeffCalc:
+ 206              	;
+ 207              	; Prototype:
+ 208              	; void PIDCoeffCalc ( fractional *fooPIDGainCoeff, tPID *fooPIDStruct )
+ 209              	;
+ 210              	; Operation: This routine computes the PID coefficients to use based on values
+ 211              	;            of Kp, Ki and Kd provided. The calculated coefficients are:
+ 212              	;             A = Kp + Ki + Kd
+ 213              	;             B = -(Kp + 2*Kd)
+ 214              	;             C = Kd
+ 215              	; Input:
+ 216              	;       w0 = Address of coefficient array containing Kp, Ki and Kd in sequence
+ 217              	;       w1 = Address of PID data structure, tPID (type defined in dsp.h)
+ 218              	;
+ 219              	; Return:
+ 220              	;       (void)
+ 221              	;
+ 222              	; System resources usage:
+ 223              	;       {w0..w2}        used, not restored
+ 224              	;        AccA, AccB     used, not restored
+ 225              	;        CORCON         saved, used, restored
+ 226              	;
+ 227              	; DO and REPEAT instruction usage.
+ 228              	;       0 level DO instruction
+ 229              	;       0 REPEAT intructions
+ 230              	;
+ 231              	; Program words (24-bit instructions):
+ 232              	;       18
+ 233              	;
+ 234              	; Cycles (including C-function call and return overheads):
+ 235              	;       20
+ 236              	;............................................................................
+ 237              	        .global _PIDCoeffCalc
+ 238              	_PIDCoeffCalc:
+ 239 00004e  44 00 F8 	        push    CORCON                  ; Prepare CORCON for fractional computation.
+ 240              	        fractsetup      w2
+ 240 000050  02 0F 20 	> mov #FRACT_MODE,w2
+ 240 000052  22 02 88 	> mov w2,CORCON
+ 241              	                                        ;Calculate Coefficients from Kp, Ki and Kd
+ 242 000054  91 00 78 	        mov     [w1], w1
+ 243 000056  30 00 CA 	        lac     [w0++], a               ; ACCA = Kp
+ 244 000058  30 80 CA 	        lac     [w0++], b               ; ACCB = Ki
+ 245 00005a  00 00 CB 	        add     a                       ; ACCA = Kp + Ki
+ 246 00005c  20 80 CA 	        lac     [w0--], b               ; ACCB = Kd
+ 247 00005e  00 00 CB 	        add     a                       ; ACCA = Kp + Ki + Kd
+ 248 000060  31 00 CD 	        sac.r   a, [w1++]               ; _abcCoefficients[0] =  Sat(Rnd(Kp + Ki + Kd))
+ 249 000062  40 00 CA 	        lac     [--w0], a               ; ACCA = Kp
+ 250 000064  00 00 CB 	        add     a                       ; ACCA = Kp + Kd
+ 251 000066  00 00 CB 	        add     a                       ; ACCA = Kp + 2Kd
+ 252 000068  00 10 CB 	        neg     a                       ; ACCA = -(Kp + 2Kd)
+ 253 00006a  31 00 CD 	        sac.r   a, [w1++]               ; _abcCoefficients[1] =  Sat(Rnd(-Kp - 2Kd))
+ 254 00006c  11 80 CC 	        sac     b, [w1]                 ; _abcCoefficients[2] =  Kd
+ 255              	
+ 256 00006e  44 00 F9 	        pop     CORCON
+ 257 000070  00 00 06 	        return
+ 258              	
+ 259              	
+ 260              	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+ 261              	
+ 262              	        .end
+DEFINED SYMBOLS
+                            *ABS*:00000000 D:/Projects/PFSMPS/01_Firmware/trunk/src/dspcommon.inc
+                            *ABS*:00000000 D:/Projects/PFSMPS/01_Firmware/trunk/src/pid.s
+                            *ABS*:00000001 __DEBUG
+                            *ABS*:00000001 __33FJ64GS606
+                            *ABS*:00000001 __dsPIC33F
+                            *ABS*:00000001 __HAS_DSP
+                            *ABS*:00000001 __HAS_DMA
+                            *ABS*:00000001 __HAS_CODEGUARD
+                            *ABS*:00000001 __C30COFF
+ .\src/dspcommon.inc:34     *ABS*:00000002 kSof
+ .\src/dspcommon.inc:37     *ABS*:00005a82 kSinPiQ
+ .\src/dspcommon.inc:38     *ABS*:00005a82 kInvSqrt2
+ .\src/dspcommon.inc:44     *ABS*:00000034 PSVPAG
+ .\src/dspcommon.inc:45     *ABS*:00000044 CORCON
+ .\src/dspcommon.inc:46     *ABS*:00000046 MODCON
+ .\src/dspcommon.inc:47     *ABS*:00000050 XBREV
+ .\src/dspcommon.inc:48     *ABS*:00000048 XMODSRT
+ .\src/dspcommon.inc:49     *ABS*:0000004a XMODEND
+ .\src/dspcommon.inc:50     *ABS*:0000004c YMODSRT
+ .\src/dspcommon.inc:51     *ABS*:0000004e YMODEND
+ .\src/dspcommon.inc:56     *ABS*:00000080 SATA_ON
+ .\src/dspcommon.inc:57     *ABS*:00000040 SATB_ON
+ .\src/dspcommon.inc:58     *ABS*:00000020 SATDW_ON
+ .\src/dspcommon.inc:59     *ABS*:00000010 ACCSAT_ON
+ .\src/dspcommon.inc:60     *ABS*:000000f0 FRACT_SET
+ .\src/dspcommon.inc:62     *ABS*:fffffffd RND_OFF
+ .\src/dspcommon.inc:63     *ABS*:fffffffe IF_OFF
+ .\src/dspcommon.inc:64     *ABS*:fffffffc FRACT_RESET
+ .\src/dspcommon.inc:66     *ABS*:000000f0 FRACT_MODE
+ .\src/dspcommon.inc:75     *ABS*:00000004 PSV_ON
+ .\src/dspcommon.inc:96     *ABS*:0000ff00 COEFFS_IN_DATA
+ .\src/dspcommon.inc:99     *ABS*:00000000 oNumCoeffs
+ .\src/dspcommon.inc:100    *ABS*:00000002 oCoeffsBase
+ .\src/dspcommon.inc:102    *ABS*:00000004 oCoeffsEnd
+ .\src/dspcommon.inc:104    *ABS*:00000006 oCoeffsPage
+ .\src/dspcommon.inc:106    *ABS*:00000008 oDelayBase
+ .\src/dspcommon.inc:108    *ABS*:0000000a oDelayEnd
+ .\src/dspcommon.inc:110    *ABS*:0000000c oDelay
+ .\src/dspcommon.inc:116    *ABS*:00000000 oOrder
+ .\src/dspcommon.inc:117    *ABS*:00000002 oKappaVals
+ .\src/dspcommon.inc:118    *ABS*:00000004 oGammaVals
+ .\src/dspcommon.inc:119    *ABS*:00000006 oLattCoeffsPage
+ .\src/dspcommon.inc:120    *ABS*:00000008 oLattDelay
+           src\pid.s:32     *ABS*:00000000 offsetabcCoefficients
+           src\pid.s:33     *ABS*:00000002 offsetcontrolHistory
+           src\pid.s:34     *ABS*:00000004 offsetcontrolOutput
+           src\pid.s:35     *ABS*:00000006 offsetmeasuredOutput
+           src\pid.s:36     *ABS*:00000008 offsetcontrolReference
+           src\pid.s:109    .libdsp:00000000 _PID
+           src\pid.s:186    .libdsp:00000038 _PIDInit
+           src\pid.s:238    .libdsp:0000004e _PIDCoeffCalc
+
+NO UNDEFINED SYMBOLS
+
+EQUATE SYMBOLS
+D:/Projects/PFSMPS/01_Firmware/trunk/src/dspcommon.inc = 0x0
+D:/Projects/PFSMPS/01_Firmware/trunk/src/pid.s = 0x0
+                         __DEBUG = 0x1
+                   __33FJ64GS606 = 0x1
+                      __dsPIC33F = 0x1
+                       __HAS_DSP = 0x1
+                       __HAS_DMA = 0x1
+                 __HAS_CODEGUARD = 0x1
+                       __C30COFF = 0x1
+                            kSof = 0x2
+                         kSinPiQ = 0x5a82
+                       kInvSqrt2 = 0x5a82
+                          PSVPAG = 0x34
+                          CORCON = 0x44
+                          MODCON = 0x46
+                           XBREV = 0x50
+                         XMODSRT = 0x48
+                         XMODEND = 0x4a
+                         YMODSRT = 0x4c
+                         YMODEND = 0x4e
+                         SATA_ON = 0x80
+                         SATB_ON = 0x40
+                        SATDW_ON = 0x20
+                       ACCSAT_ON = 0x10
+                       FRACT_SET = 0xf0
+                         RND_OFF = 0xfffffffd
+                          IF_OFF = 0xfffffffe
+                     FRACT_RESET = 0xfffffffc
+                      FRACT_MODE = 0xf0
+                          PSV_ON = 0x4
+                  COEFFS_IN_DATA = 0xff00
+                      oNumCoeffs = 0x0
+                     oCoeffsBase = 0x2
+                      oCoeffsEnd = 0x4
+                     oCoeffsPage = 0x6
+                      oDelayBase = 0x8
+                       oDelayEnd = 0xa
+                          oDelay = 0xc
+                          oOrder = 0x0
+                      oKappaVals = 0x2
+                      oGammaVals = 0x4
+                 oLattCoeffsPage = 0x6
+                      oLattDelay = 0x8
+           offsetabcCoefficients = 0x0
+            offsetcontrolHistory = 0x2
+             offsetcontrolOutput = 0x4
+            offsetmeasuredOutput = 0x6
+          offsetcontrolReference = 0x8
+
+SECTION INFORMATION:
+
+Section        Length (PC units)   Length (bytes) (dec)
+-------        -----------------   --------------------
+.text                          0               0  (0)
+.libdsp                     0x72            0xab  (171)
+
+TOTAL PROGRAM MEMORY USED (bytes):          0xab  (171)
+
+Section           Alignment Gaps   Length (bytes) (dec)
+-------           --------------   --------------------
+.data                          0               0  (0)
+.bss                           0               0  (0)
+
+   TOTAL DATA MEMORY USED (bytes):             0  (0)
